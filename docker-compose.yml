@@ -1,0 +1,89 @@
+$content = @'
+version: "3.9"
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: billing
+      POSTGRES_PASSWORD: billing
+      POSTGRES_DB: billing
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U billing"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  backend:
+    build: .
+    command: >
+      sh -c "python manage.py migrate &&
+             python manage.py collectstatic --noinput &&
+             python seed.py &&
+             gunicorn config.wsgi:application --bind 0.0.0.0:8000 --workers 4"
+    environment:
+      SECRET_KEY: dev-secret-key-change-in-prod
+      DEBUG: "True"
+      DATABASE_URL: postgres://billing:billing@db:5432/billing
+      CELERY_BROKER_URL: redis://redis:6379/0
+      WEBHOOK_SIGNING_SECRET: dev-webhook-signing-secret
+      ALLOWED_HOSTS: localhost,127.0.0.1
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    build: .
+    command: celery -A config worker --loglevel=info --concurrency=4
+    environment:
+      SECRET_KEY: dev-secret-key-change-in-prod
+      DATABASE_URL: postgres://billing:billing@db:5432/billing
+      CELERY_BROKER_URL: redis://redis:6379/0
+      WEBHOOK_SIGNING_SECRET: dev-webhook-signing-secret
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  beat:
+    build: .
+    command: celery -A config beat --loglevel=info --scheduler django_celery_beat.schedulers:DatabaseScheduler
+    environment:
+      SECRET_KEY: dev-secret-key-change-in-prod
+      DATABASE_URL: postgres://billing:billing@db:5432/billing
+      CELERY_BROKER_URL: redis://redis:6379/0
+      WEBHOOK_SIGNING_SECRET: dev-webhook-signing-secret
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "5173:5173"
+    environment:
+      VITE_API_URL: http://localhost:8000
+
+volumes:
+  pgdata:
+'@
+
+Set-Content -Path "docker-compose.yml" -Value $content
+Write-Host "docker-compose.yml saved"
